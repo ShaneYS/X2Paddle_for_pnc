@@ -299,14 +299,16 @@ class PaddleGraph(object):
             for input_name in self.inputs:
                 input_shapes.append(self.inputs_info[input_name][0])
                 input_types.append(self.inputs_info[input_name][1])
-            try:
-                self.dygraph2static(save_dir, input_shapes, input_types)
-            except Exception as e:
-                print(
-                    "Fail to generate inference model! Problem happened while export inference model from python code '{}';\n"
-                    .format(code_path))
-                print("===================Error Information===============")
-                raise e
+
+            self.dygraph2static(save_dir, input_shapes, input_types)
+            # try:
+            #     self.dygraph2static(save_dir, input_shapes, input_types)
+            # except Exception as e:
+            #     print(
+            #         "Fail to generate inference model! Problem happened while export inference model from python code '{}';\n"
+            #         .format(code_path))
+            #     print("===================Error Information===============")
+            #     raise e
 
     def get_inputs(self):
 
@@ -423,6 +425,33 @@ class PaddleGraph(object):
                     "out = model({})".format(input_data_name), "return out"
                 ],
                           indent=1))
+            
+            # main function
+            main_entry = """
+if __name__ == '__main__':
+            """
+            self.run_func.extend(gen_codes([main_entry], indent=0))
+            main_func = """
+x2paddle_obstacle_polyline = paddle.randn(shape=[1, 64, 16, 17], dtype='float32')
+x2paddle_lane_polyline = paddle.randn(shape=[1, 256, 64, 20], dtype='float32')
+x2paddle_stopline_polyline = paddle.randn(shape=[1, 16, 8, 16], dtype='float32')
+x2paddle_crosswalk_polyline = paddle.randn(shape=[1, 32, 16, 5], dtype='float32')
+x2paddle_adc_occ_map = paddle.randn(shape=[1, 400, 400, 2], dtype='float32')
+x2paddle_veh_target_obs_idx = paddle.randn(shape=[16], dtype='float32')
+x2paddle_cyc_target_obs_idx = paddle.randn(shape=[10], dtype='float32') 
+x2paddle_ped_target_obs_idx = paddle.randn(shape=[10], dtype='float32')
+x2paddle_anchor_lane_target_obs_idx = paddle.randn(shape=[4], dtype='float32')
+x2paddle_scene_index = paddle.randn(shape=[1], dtype='float32')
+x2paddle_anchor_lane_indices = paddle.randn(shape=[4, 8], dtype='float32')
+x2paddle_veh_target_obs_idx_mask_adc_flag = paddle.randn(shape=[16], dtype='float32')
+x2paddle_cyc_target_obs_idx_mask_adc_flag = paddle.randn(shape=[10], dtype='float32')
+x2paddle_ped_target_obs_idx_mask_adc_flag = paddle.randn(shape=[10], dtype='float32')
+x2paddle_anchor_lane_target_obs_idx_mask_adc_flag = paddle.randn(shape=[4], dtype='float32')    
+out = main(x2paddle_obstacle_polyline, x2paddle_lane_polyline, x2paddle_stopline_polyline, x2paddle_crosswalk_polyline, x2paddle_adc_occ_map, x2paddle_veh_target_obs_idx, x2paddle_cyc_target_obs_idx, x2paddle_ped_target_obs_idx, x2paddle_anchor_lane_target_obs_idx, x2paddle_scene_index, x2paddle_anchor_lane_indices, x2paddle_veh_target_obs_idx_mask_adc_flag, x2paddle_cyc_target_obs_idx_mask_adc_flag, x2paddle_ped_target_obs_idx_mask_adc_flag, x2paddle_anchor_lane_target_obs_idx_mask_adc_flag)
+print(f'Output shapes: {[o.shape for o in out]}')
+            """
+            for code_line in main_func.splitlines():
+                self.run_func.extend(gen_codes([code_line], indent=1))
 
         def write_code(code_dir):
             f = open(osp.join(code_dir, 'x2paddle_code.py'), 'w')
@@ -590,14 +619,17 @@ class PaddleGraph(object):
                                                 full_graph=True)
         else:
             static_model = paddle.jit.to_static(model, input_spec=spec_list)
-        try:
-            paddle.jit.save(static_model,
-                            osp.join(save_dir, "inference_model/model"))
-        except ValueError as e:
-            if str(e) == "'target_vars' should be a list of Variable.":
-                print(
-                    "[DyGraph2StaticGraph Error] Can not convert the dygraph to static! The output of PyTorch mustbe Variable or a list of Variable."
-                )
-            else:
-                print(e)
-                exit(0)
+            
+        paddle.jit.save(static_model,
+                        osp.join(save_dir, "inference_model/model"), skip_prune_program=True)
+        # try:
+        #     paddle.jit.save(static_model,
+        #                     osp.join(save_dir, "inference_model/model"))
+        # except ValueError as e:
+        #     if str(e) == "'target_vars' should be a list of Variable.":
+        #         print(
+        #             "[DyGraph2StaticGraph Error] Can not convert the dygraph to static! The output of PyTorch mustbe Variable or a list of Variable."
+        #         )
+        #     else:
+        #         print(e)
+        #         exit(0)

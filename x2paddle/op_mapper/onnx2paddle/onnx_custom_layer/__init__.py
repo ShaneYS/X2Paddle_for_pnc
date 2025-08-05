@@ -20,3 +20,12 @@ from .pad_all_dim4_one_input import PadAllDim4WithOneInput
 from .nms import NMS
 from .roi_align import ROIAlign
 from .roi_pooling import ROIPooling
+from .pnc_op import (
+    Round,
+    RotRPEAttentionWeightWithIndexComputation,
+    RotRPEProjectValueWithIndexComputation,
+    LayerNormalization,
+    Atan,
+    GridSample,
+    ScatterElements,
+)

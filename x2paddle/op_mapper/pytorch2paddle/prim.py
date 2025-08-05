@@ -709,3 +709,15 @@ def prim_Uninitialized(mapper, graph, node):
                     scope_name=scope_name,
                     value=None)
     return [], [output_name]
+
+def prim_PythonOp(mapper, graph, node):
+    scope_name = mapper.normalize_scope_name(node)
+    output_name = mapper._get_outputs_name(node)[0]
+    output = list(node.outputs())[0]
+    mapper.attrs[output_name] = None
+    graph.add_layer("prim.customop_PythonOp",
+                    inputs={},
+                    outputs=[output_name],
+                    scope_name=scope_name,
+                    value=None)
+    return [], [output_name]

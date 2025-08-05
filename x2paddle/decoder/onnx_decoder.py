@@ -34,6 +34,9 @@ import copy
 default_op_domain = 'ai.onnx'
 _logger = _logging.getLogger(__name__)
 
+g_map_nodename_old_to_new = {}
+g_map_nodetype = {}
+g_map_nodename_to_shape = {}
 
 class ONNXGraphNode(GraphNode):
 
@@ -191,7 +194,7 @@ class ONNXGraph(Graph):
         print("Shape inferencing ...")
         try:
             self.graph = SymbolicShapeInference.infer_shapes(
-                onnx_model, fixed_input_shape=self.fixed_input_shape)
+                onnx_model, fixed_input_shape=self.fixed_input_shape, verbose=100)
         except:
             print('[WARNING] Shape inference by ONNX offical interface.')
             onnx_model = shape_inference.infer_shapes(onnx_model)
@@ -401,7 +404,7 @@ class ONNXGraph(Graph):
 
 class ONNXDecoder(object):
 
-    def __init__(self, onnx_model, enable_onnx_checker, input_shape_dict=None):
+    def __init__(self, onnx_model, enable_onnx_checker, input_shape_dict=None, onnx_export_log_path=None):
         onnx_model = onnx.load(onnx_model)
         print('model ir_version: {}, op version: {}'.format(
             onnx_model.ir_version, onnx_model.opset_import[0].version))
@@ -410,6 +413,7 @@ class ONNXDecoder(object):
         if enable_onnx_checker:
             check_model(onnx_model)
 
+        self.onnx_export_log_path = onnx_export_log_path
         onnx_model = self.optimize_model_skip_op(onnx_model)
         onnx_model = self.optimize_node_name(onnx_model)
         self.graph = ONNXGraph(onnx_model, input_shape_dict)
@@ -560,15 +564,26 @@ class ONNXDecoder(object):
         """
         graph = model.graph
         for initializer in graph.initializer:
+            old_name = initializer.name
             initializer.name = self.make_variable_name(initializer.name)
+            g_map_nodename_old_to_new[old_name] = initializer.name
         for ipt in graph.input:
+            old_name = ipt.name
             ipt.name = self.make_variable_name(ipt.name)
+            g_map_nodename_old_to_new[old_name] = ipt.name
+            print(f'input: {old_name} -> {ipt.name}')
         for output in graph.output:
+            old_name = output.name
             output.name = self.make_variable_name(output.name)
+            g_map_nodename_old_to_new[old_name] = output.name
+            print(f'output: {old_name} -> {output.name}')
         for item in graph.value_info:
+            old_name = item.name
             item.name = self.make_variable_name(item.name)
+            g_map_nodename_old_to_new[old_name] = item.name
         for node in graph.node:
             node.name = node.output[0]
+            old_name = node.name
             # Avoid topological sort errors caused by :: in the name
             if "::" in node.name and len(node.output) > 1:
                 node.name = node.name.replace('::', '_')
@@ -576,11 +591,55 @@ class ONNXDecoder(object):
                     node.output) > 1 and node.op_type != "LSTM":
                 node.name = node.name.split(':')[0]
             node.name = self.make_variable_name(node.name)
+            g_map_nodename_old_to_new[old_name] = node.name
             for i in range(len(node.input)):
                 if node.input[i] == '':
                     continue
                 else:
+                    old_name = node.input[i]
                     node.input[i] = self.make_variable_name(node.input[i])
+                    g_map_nodename_old_to_new[old_name] = node.input[i]
             for i in range(len(node.output)):
+                old_name = node.output[i]
                 node.output[i] = self.make_variable_name(node.output[i])
+                g_map_nodename_old_to_new[old_name] = node.output[i]
+        
+        # 从torch.onnx.export verbose日志中获取dtype
+        map_dt_to_dtype = {
+            'Long': 'int64',
+            'Int': 'int32',
+            'Float': 'float32',
+            'Double': 'float64',
+            'Bool': 'bool',
+        }
+        with open(self.onnx_export_log_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if ' : Tensor? ' in line:
+                    continue
+                if line.startswith("%"):
+                    old_name = line[1:].split(' ')[0]
+                    dt = line.split(' : ')[-1].split('(')[0]
+                    if old_name not in g_map_nodename_old_to_new:
+                        continue
+                    new_name = g_map_nodename_old_to_new[old_name]
+                    g_map_nodetype[new_name] = map_dt_to_dtype[dt]
+            
+                    # get shape
+                    try:
+                        shape = line.split(' : ')[-1].split('(')[1].split(', strides')[0].split(', ')
+                        shape_int = [int(v) for v in shape]
+                        g_map_nodename_to_shape[new_name] = shape_int
+                    except Exception as e:
+                        pass
+                    
+        # save to json
+        import json
+        with open(f'{os.path.join(os.path.dirname(self.onnx_export_log_path), "g_map_nodename_to_shape.json")}', 'w') as f:
+            json.dump(g_map_nodename_to_shape, f, indent=4)
+            print(f'save to {os.path.join(os.path.dirname(self.onnx_export_log_path), "g_map_nodename_to_shape.json")}')
+        with open(f'{os.path.join(os.path.dirname(self.onnx_export_log_path), "g_map_nodename_old_to_new.json")}', 'w') as f:
+            json.dump(g_map_nodename_old_to_new, f, indent=4)
+            print(f'save to {os.path.join(os.path.dirname(self.onnx_export_log_path), "g_map_nodename_old_to_new.json")}')
+        
         return model

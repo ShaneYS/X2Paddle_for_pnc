@@ -6851,6 +6851,71 @@ def aten_scaled_dot_product_attention(mapper, graph, node):
     return current_inputs, current_outputs
 
 
+def fake_node(mapper, graph, node, name):
+    scope_name = mapper.normalize_scope_name(node)
+    output_name = mapper._get_outputs_name(node)[0]
+    layer_outputs = [output_name]
+    layer_inputs = {}
+    layer_attrs = {}
+    inputs_name, inputs_node = mapper._get_inputs_name(node)
+    # 获取当前节点输出的list
+    current_outputs = [output_name]
+
+    # process input
+    layer_inputs["x"] = inputs_name[0]
+
+    # 获取当前节点输入的list
+    current_inputs = list(layer_inputs.values())
+
+    graph.add_layer(name,
+                    inputs=layer_inputs,
+                    outputs=layer_outputs,
+                    scope_name=scope_name)
+    return current_inputs, current_outputs
+
+
+def aten_logical_and(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_logical_and")
+
+def aten_multiply(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_multiply")
+
+def aten_clip(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_clip")
+
+def aten_isinf(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_isinf")
+
+def aten_grid_sampler(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_grid_sampler")
+def aten_round(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_round")
+def aten_atan2(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_atan2")
+def aten_maximum(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_maximum")
+def aten_fill(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_fill")
+def aten_reciprocal(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_reciprocal")
+def aten_ge(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_ge")
+def aten_elu(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_elu")
+def aten_scatter_add(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_scatter_add")
+def aten_logical_or(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_logical_or")
+def aten_unflatten(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_unflatten")
+def aten_logical_not(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_logical_not")
+def aten_concat(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_concat")
+def aten_ones_like(mapper, graph, node):
+    return fake_node(mapper, graph, node, "prim.customop_ones_like")
+
+
 # pytorch has one more param: `dtype`, which is not used.
 aten_linalg_vector_norm = aten_norm
 

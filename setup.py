@@ -11,7 +11,7 @@ with open("requirements.txt") as fin:
 
 setuptools.setup(
     name="x2paddle",
-    version=x2paddle.__version__,
+    version="2025.08.05",
     author="PaddlePaddle Developer Community",
     author_email="ext_paddle_oss@baidu.com",
     description=

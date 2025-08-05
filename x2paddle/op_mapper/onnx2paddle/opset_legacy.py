@@ -27,8 +27,29 @@ import os
 import copy
 import sys
 import shutil
+import paddle
 
 _logger = _logging.getLogger()
+
+# g_map_node_to_shape = {}
+# shape_log_path = '/data/project/baidu_for_rpc/baidu/adt-pnc/pnc-learning/scripts/prediction_models/models/lordformer_base_model_cuda_atten_torch/export_verbose_shape_out7.log'
+# with open(shape_log_path, 'r') as f:
+#     for line in f:
+#         if not line.startswith('  %/'):
+#             continue
+#         filter_list = ['(device=', '(requires_grad=0', '(*']
+#         if any([i in line for i in filter_list]):
+#             continue
+        
+#         line = line.strip()
+#         name = line.split('%/')[1].split(' :')[0]
+#         name = name.replace('/', '_')
+#         name = f'x2paddle__{name}'
+        
+#         shape_str = line.split('(')[1].split(', strides')[0].split(', requires_grad=0')[0]
+#         shape = [int(i) for i in shape_str.split(', ')]
+        
+#         g_map_node_to_shape[name] = shape
 
 
 def _const_weight_or_none(node, necessary=False):
@@ -276,6 +297,9 @@ class OpSet():
         if parameter is not None:
             node = parameter
         dtype = node.dtype
+        if dtype == None:
+            from x2paddle.decoder import onnx_decoder
+            dtype = onnx_decoder.g_map_nodetype[node.name]
         shape = node.out_shapes[0]
 
         if hasattr(node.weight, "shape") and len(node.weight.shape) == 0:
@@ -793,6 +817,9 @@ class OpSet():
 
         value = node.get_attr('value')
         dtype = np.dtype(value.dtype)
+        if dtype == None:
+            from x2paddle.decoder import onnx_decoder
+            dtype = onnx_decoder.g_map_nodetype[value.name]
         output_dtype = val_output.dtype
         if output_dtype:
             assert dtype == output_dtype, 'tensor dtype unmatches storage dtype'
@@ -875,6 +902,9 @@ class OpSet():
         val_x = self.graph.get_input_node(node, idx=0, copy=True)
         val_shape = self.graph.get_input_node(node, idx=1, copy=True)
         val_x_dtype = val_x.dtype
+        if val_x_dtype == None:
+            from x2paddle.decoder import onnx_decoder
+            val_x_dtype = onnx_decoder.g_map_nodetype[val_x.name]
         name_ones = node.name + '_ones'
         shape_values = _const_weight_or_none(val_shape)
         if shape_values is None:
@@ -920,13 +950,39 @@ class OpSet():
         if len(indices_shape) == 1 or \
             (indices_values is not None and isinstance(indices_values, int)) or \
                 (indices_values is not None and len(indices_values) == 1):
-            self.paddle_graph.add_layer('paddle.gather',
-                                        inputs={
-                                            'x': val_x.name,
-                                            'index': indices.name
-                                        },
-                                        outputs=[node.name],
-                                        axis=axis)
+            
+            # paddle.gather不支持负索引
+            if hasattr(indices, 'weight') and indices.weight.size==1 and indices.weight < 0:
+                from x2paddle.decoder import onnx_decoder
+                val_x_name_shape = onnx_decoder.g_map_nodename_to_shape[val_x.name]
+                index = val_x_name_shape[axis] + indices.weight
+                
+                attr = {
+                    'shape': [1],
+                    'dtype': string('int64'),
+                    'fill_value': index
+                }
+                index_name = node.name + '_index'
+                self.paddle_graph.add_layer('paddle.full',
+                                            inputs={},
+                                            outputs=[index_name],
+                                            **attr)
+                
+                self.paddle_graph.add_layer('paddle.gather',
+                                            inputs={
+                                                'x': val_x.name,
+                                                'index': index_name
+                                            },
+                                            outputs=[node.name],
+                                            axis=axis)
+            else:        
+                self.paddle_graph.add_layer('paddle.gather',
+                                            inputs={
+                                                'x': val_x.name,
+                                                'index': indices.name
+                                            },
+                                            outputs=[node.name],
+                                            axis=axis)
             # deal with indice is scalar(0D) Tensor
             if isinstance(indices_values, int) and len(val_x_shape) != 1:
                 self.paddle_graph.add_layer('paddle.squeeze',
@@ -1014,7 +1070,7 @@ class OpSet():
         indices = self.graph.get_input_node(node, idx=1, copy=True)
         updates = self.graph.get_input_node(node, idx=2, copy=True)
         if len(indices.out_shapes[0]) == 1:
-            self.paddle_graph.add_layer('paddle.scatter',
+            self.paddle_graph.add_layer('paddle.scatter', # 不应进入此代码
                                         inputs={
                                             'x': val_x.name,
                                             'index': indices.name,
@@ -1023,26 +1079,56 @@ class OpSet():
                                         outputs=[node.name])
         else:
             input_inner_indices = node.name + '_input_inner_indices'
-            shape = val_x.out_shapes[0]
+            shape = indices.out_shapes[0]
+            if shape == []:
+                from x2paddle.decoder import onnx_decoder
+                shape = onnx_decoder.g_map_nodename_to_shape[indices.layer_name]
             self.paddle_graph.add_layer('paddle.reshape',
                                         inputs={"x": indices.name},
                                         outputs=[indices.name],
-                                        shape=indices.out_shapes[0])
+                                        shape=shape)
 
             zeros_like_val_x = val_x.name + '_zeros'
             self.paddle_graph.add_layer('paddle.zeros_like',
                                         inputs={"x": val_x.name},
                                         outputs=[zeros_like_val_x])
+            
+            from x2paddle.decoder import onnx_decoder
+            if updates.name in onnx_decoder.g_map_nodename_to_shape.keys():
+                self.paddle_graph.add_layer('paddle.reshape',
+                                            inputs={
+                                                'x': updates.name,
+                                            },
+                                            outputs=[updates.name],
+                                            shape=onnx_decoder.g_map_nodename_to_shape[updates.name]
+                                            )
+                
+            # scatter的index中不能有负值
+            # 添加一个算子，将indices中的负值转换为正值
+            # 暂时不知道如何实现，先用一个全1的tensor代替
+            new_indices = indices.name + '_fake'
+            self.paddle_graph.add_layer('paddle.full_like',
+                                        inputs={'x': indices.name},
+                                        outputs=[new_indices],
+                                        dtype=string('int64'),
+                                        fill_value=0
+                                        )
+            # todo 正确实现
+            todo
             self.paddle_graph.add_layer('paddle.scatter_nd_add',
                                         inputs={
                                             'x': zeros_like_val_x,
-                                            'index': indices.name,
+                                            'index': new_indices,
                                             'updates': updates.name
                                         },
                                         outputs=[input_inner_indices])
             indices_mask = node.name + '_indices_mask'
             constant_minus_one = node.name + '_constant_minus_one'
             # full_like support create tensor shape like input tensor
+            if updates.dtype == None:
+                from x2paddle.decoder import onnx_decoder
+                updates.dtype = onnx_decoder.g_map_nodetype[updates.name]
+                
             self.paddle_graph.add_layer('paddle.full_like',
                                         inputs={"x": updates.name},
                                         outputs=[constant_minus_one],
@@ -1051,12 +1137,16 @@ class OpSet():
             self.paddle_graph.add_layer('paddle.scatter_nd_add',
                                         inputs={
                                             'x': zeros_like_val_x,
-                                            'index': indices.name,
+                                            'index': new_indices, todo
                                             'updates': constant_minus_one
                                         },
                                         outputs=[indices_mask])
             constant_one = node.name + '_constant_1'
             # full_like support create tensor shape like input tensor
+            if val_x.dtype == None:
+                from x2paddle.decoder import onnx_decoder
+                val_x.dtype = onnx_decoder.g_map_nodetype[val_x.name]
+                
             self.paddle_graph.add_layer('paddle.full_like',
                                         inputs={"x": val_x.name},
                                         outputs=[constant_one],
@@ -1122,7 +1212,11 @@ class OpSet():
                 ends_value = ends_value.tolist()
             if len(node.inputs) > 2:
                 s_len = len(val_x.out_shapes[0])
-                axes = list(range(s_len))
+                # s_len==0 导致axes为[]
+                if s_len == 0:
+                    from x2paddle.decoder import onnx_decoder
+                    s_len = len(onnx_decoder.g_map_nodename_to_shape[val_x.name])
+                axes = list(range(s_len)) 
             if len(node.inputs) > 3:
                 axes_node = self.graph.get_input_node(node, idx=3, copy=True)
                 axes = _const_weight_or_none(axes_node, necessary=True).tolist()
@@ -1218,6 +1312,9 @@ class OpSet():
 
         value = node.get_attr('value')
         dtype = value.dtype
+        if dtype == None:
+            from x2paddle.decoder import onnx_decoder
+            dtype = onnx_decoder.g_map_nodetype[value.name]
         value = value.tolist()
         assert len(value) == 1, ('given value not Scalar, shape of value > 1, '
                                  'this is not supported')
@@ -1492,7 +1589,17 @@ class OpSet():
                                             inputs={'x': val_shape.name},
                                             outputs=[val_shape.name],
                                             dtype=string("int32"))
-            self.paddle_graph.add_layer('paddle.reshape',
+            from x2paddle.decoder import onnx_decoder
+            if val_shape.outputs[0] in onnx_decoder.g_map_nodename_to_shape.keys():
+                self.paddle_graph.add_layer('paddle.reshape',
+                                            inputs={
+                                                'x': val_x.name,
+                                            },
+                                            outputs=[node.name],
+                                            shape=onnx_decoder.g_map_nodename_to_shape[val_shape.outputs[0]]
+                                            )
+            else:
+                self.paddle_graph.add_layer('paddle.reshape',
                                         inputs={
                                             'x': val_x.name,
                                             'shape': val_shape.name
@@ -1977,8 +2084,8 @@ class OpSet():
         layer_outputs = [op_name, output_name]
         val_x = self.graph.get_input_node(node, idx=0, copy=True)
         auto_pad = node.get_attr('auto_pad', 'NOTSET')
-        assert node.get_attr(
-            "dilations") is None, 'only dilations = 0 is supported'  # optional
+        # assert node.get_attr(
+        #     "dilations") is None, 'only dilations = 0 is supported'  # optional
 
         kernel_shape = node.get_attr("kernel_shape")
         poolnd = len(kernel_shape)
@@ -2044,6 +2151,9 @@ class OpSet():
         else:
             val_y = node.name + "_y"
             dtype = np.dtype(val_x.dtype)
+            if dtype == None:
+                from x2paddle.decoder import onnx_decoder
+                dtype = onnx_decoder.g_map_nodetype[val_x.name]
             self.paddle_graph.add_layer("paddle.full",
                                         inputs={},
                                         outputs=[val_y],
@@ -2084,7 +2194,17 @@ class OpSet():
         indices = self.graph.get_input_node(node, idx=1, copy=True)
         axis = node.get_attr('axis')
         val_x_shape = val_x.out_shapes[0]
+        if len(val_x_shape) == 0:
+            from x2paddle.decoder import onnx_decoder
+            val_x_shape = onnx_decoder.g_map_nodename_to_shape[val_x.layer_name]
+            
+            # val_x_shape = g_map_node_to_shape[val_x.layer_name]
         indices_shape = indices.out_shapes[0]
+        if len(indices_shape) == 0:
+            from x2paddle.decoder import onnx_decoder
+            indices_shape = onnx_decoder.g_map_nodename_to_shape[indices.layer_name]
+            
+            # indices_shape = g_map_node_to_shape[indices.layer_name]
         axis = axis if axis >= 0 else axis + len(val_x_shape)
         if axis == 0:
             axis_perm = [i for i in range(len(val_x_shape))]
@@ -2633,6 +2753,13 @@ class OpSet():
                                             "{}_p{}".format(node.layer_name, 1)
                                         ],
                                         **layer_attrs)
+            
+            # 添加一个cast，将topk.output[0]直接转为output6
+            if 'x2paddle_output_node6_p0' == "{}_p{}".format(node.layer_name, 0):
+                self.paddle_graph.add_layer('paddle.cast',
+                                            inputs={'x': 'x2paddle_output_node6_p0'},
+                                            outputs=['x2paddle_output_node6_0'],
+                                            dtype=string('float32'))
         else:
             if val_k.dtype != "int32":
                 self.paddle_graph.add_layer("paddle.cast",

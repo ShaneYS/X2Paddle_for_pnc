@@ -279,7 +279,8 @@ def onnx2paddle(model_path,
                 lite_valid_places="arm",
                 lite_model_type="naive_buffer",
                 disable_feedback=False,
-                enable_onnx_checker=True):
+                enable_onnx_checker=True,
+                onnx_export_log_path=None):
 
     logger.info(">>> onnx2paddle ...")
 
@@ -320,7 +321,7 @@ def onnx2paddle(model_path,
 
     from x2paddle.decoder.onnx_decoder import ONNXDecoder
     from x2paddle.op_mapper.onnx2paddle.onnx_op_mapper import ONNXOpMapper
-    model = ONNXDecoder(model_path, enable_onnx_checker, input_shape_dict)
+    model = ONNXDecoder(model_path, enable_onnx_checker, input_shape_dict, onnx_export_log_path)
     mapper = ONNXOpMapper(model)
     mapper.paddle_graph.build()
     logger.info("Model optimizing ...")
