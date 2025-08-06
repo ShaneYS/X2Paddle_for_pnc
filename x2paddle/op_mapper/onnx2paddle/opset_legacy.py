@@ -1012,6 +1012,9 @@ class OpSet():
                                             outputs=[indices.name + "_reshape"],
                                             shape=[-1])
                 gather_1d = node.name + '_1D'
+                if indices.dtype == None:
+                    indices_ref = self.graph.get_input_node(node, idx=1, copy=False)
+                    indices_ref.dtype = np.dtype('int64')
                 self.paddle_graph.add_layer('paddle.gather',
                                             inputs={
                                                 'x': val_x.name,
@@ -1106,19 +1109,18 @@ class OpSet():
             # scatter的index中不能有负值
             # 添加一个算子，将indices中的负值转换为正值
             # 暂时不知道如何实现，先用一个全1的tensor代替
-            new_indices = indices.name + '_fake'
-            self.paddle_graph.add_layer('paddle.full_like',
-                                        inputs={'x': indices.name},
-                                        outputs=[new_indices],
-                                        dtype=string('int64'),
-                                        fill_value=0
-                                        )
+            # new_indices = indices.name + '_fake'
+            # self.paddle_graph.add_layer('paddle.full_like',
+            #                             inputs={'x': indices.name},
+            #                             outputs=[new_indices],
+            #                             dtype=string('int64'),
+            #                             fill_value=0
+            #                             )
             # todo 正确实现
-            todo
             self.paddle_graph.add_layer('paddle.scatter_nd_add',
                                         inputs={
                                             'x': zeros_like_val_x,
-                                            'index': new_indices,
+                                            'index': indices.name,
                                             'updates': updates.name
                                         },
                                         outputs=[input_inner_indices])
@@ -1137,7 +1139,7 @@ class OpSet():
             self.paddle_graph.add_layer('paddle.scatter_nd_add',
                                         inputs={
                                             'x': zeros_like_val_x,
-                                            'index': new_indices, todo
+                                            'index': indices.name,
                                             'updates': constant_minus_one
                                         },
                                         outputs=[indices_mask])
@@ -1387,7 +1389,7 @@ class OpSet():
             if keepdims is None:
                 keepdims = True
             axes_value = node.get_attr('axes')
-            layer_attrs = {'axis': axes_value, 'keepdim': keepdims}
+            layer_attrs = {'axis': axes_value, 'keepdim': bool(keepdims)}
             self.paddle_graph.add_layer('paddle.sum',
                                         inputs={"x": val_x.name},
                                         outputs=[node.name],
@@ -1401,7 +1403,7 @@ class OpSet():
             if keepdims is None:
                 layer_attrs = {'axis': axes_value}
             else:
-                layer_attrs = {'axis': axes_value, 'keepdim': keepdims}
+                layer_attrs = {'axis': axes_value, 'keepdim': bool(keepdims)}
 
             self.paddle_graph.add_layer('paddle.sum',
                                         inputs={"x": val_x.name},
